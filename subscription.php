@@ -10,7 +10,7 @@ error_reporting(E_ALL);
 // Database connection
 $host = "localhost";
 $db_name = "easymeals";
-$db_user = "root";
+$db_user = "";
 $db_password = "root";
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
