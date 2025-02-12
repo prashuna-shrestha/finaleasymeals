@@ -1,80 +1,114 @@
 <?php
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, GET");
+header("Access-Control-Allow-Methods: GET, POST");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Content-Type: application/json");
 
-// Database credentials
-$servername = "localhost";
-$username = "root"; 
-$password = ""; 
-$dbname = "easymeals"; 
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
 
-// Connect to MySQL
-$conn = new mysqli($servername, $username, $password, $dbname);
+// Database connection
+$host = "localhost";
+$db_name = "easymeals";
+$db_user = "root";
+$db_password = "root";
 
-// Check connection
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+$conn = new mysqli($host, $db_user, $db_password, $db_name);
+
 if ($conn->connect_error) {
-    die(json_encode(["success" => false, "message" => "Database connection failed: " . $conn->connect_error]));
+    die("Connection failed: " . $conn->connect_error);
 }
 
-// Handling POST request for fetching subscription credit and remaining meals
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    // Get request data
+// Fetch subscription details for a user (GET request)
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $user_id = $_GET['user_id'];
+
+    // Query to get subscription details along with remaining meals from user_subscriptions
+    $query = "
+        SELECT us.*, s.plan_name, s.price, s.meals_per_month, s.sweets, s.drinks, 
+               us.remaining_meals, s.subscription_credit
+        FROM user_subscriptions us
+        JOIN subscriptions s ON us.subscription_id = s.subscription_id
+        WHERE us.user_id = ? AND us.status = 'active' AND us.end_date >= CURDATE()";
+
+    if ($stmt = $conn->prepare($query)) {
+        $stmt->bind_param("i", $user_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        if ($result->num_rows > 0) {
+            $subscription = $result->fetch_assoc();
+            echo json_encode([
+                "success" => true,
+                "subscription_id" => $subscription['subscription_id'],
+                "plan_name" => $subscription['plan_name'],
+                "price" => $subscription['price'],
+                "meals_per_month" => $subscription['meals_per_month'],
+                "remaining_meals" => $subscription['remaining_meals'], // Fetched from user_subscriptions
+                // "subscription_credit" => $subscription['subscription_credit'],
+                "message" => "User already has an active subscription."
+            ]);
+        } else {
+            echo json_encode([
+                "success" => false,
+                "message" => "No active subscription found."
+            ]);
+        }
+        $stmt->close();
+    } else {
+        echo json_encode([
+            "success" => false,
+            "message" => "Database query failed"
+        ]);
+    }
+}
+// Create a new subscription (POST request)
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data = json_decode(file_get_contents("php://input"), true);
 
-    // Validate input
-    if (!isset($data['user_id'])) {
-        echo json_encode(["success" => false, "message" => "Missing required field: user_id"]);
-        exit;
-    }
+    // Check if the user already has an active subscription
+    $user_id = $data['user_id'];
 
-    $user_id = $conn->real_escape_string($data['user_id']);
-    $items_ordered = isset($data['items_ordered']) ? (int)$data['items_ordered'] : 0;  // Number of items ordered
+    $checkQuery = "SELECT * FROM user_subscriptions WHERE user_id = ? AND status = 'active' AND end_date >= CURDATE()";
+    $checkStmt = $conn->prepare($checkQuery);
+    $checkStmt->bind_param("i", $user_id);
+    $checkStmt->execute();
+    $checkResult = $checkStmt->get_result();
 
-    // Query to fetch remaining meals for the user
-    $sql = "SELECT us.remaining_meals 
-    FROM user_subscriptions us
-    WHERE us.user_id = '$user_id' AND us.end_date >= CURDATE() AND us.status = 'active'";
-
-    $result = $conn->query($sql);
-
-    if ($result->num_rows > 0) {
-        // If subscription exists and is active
-        $row = $result->fetch_assoc();
-        $remaining_meals = $row['remaining_meals'];
-
-        // Check if user has enough remaining meals
-        if ($remaining_meals >= $items_ordered) {
-            // Calculate remaining meals after the order
-            $new_remaining_meals = $remaining_meals - $items_ordered;
-
-            // Update the remaining meals in the database
-            $update_sql = "UPDATE user_subscriptions 
-               SET remaining_meals = '$new_remaining_meals' 
-               WHERE user_id = '$user_id' AND status = 'active'";
-
-            if ($conn->query($update_sql) === TRUE) {
-                // Return success with subscription details
-                echo json_encode([
-                    "success" => true,
-                    "subscription_credit" => "$items_ordered from $remaining_meals",
-                    "remaining_meals" => $new_remaining_meals
-                ]);
-            } else {
-                // Handle update failure
-                echo json_encode(["success" => false, "message" => "Failed to update remaining meals"]);
-            }
-        } else {
-            // Not enough remaining meals
-            echo json_encode(["success" => false, "message" => "Not enough remaining meals for this order"]);
-        }
+    if ($checkResult->num_rows > 0) {
+        // User already has an active subscription
+        echo json_encode([
+            "success" => false,
+            "message" => "You already have an active subscription."
+        ]);
     } else {
-        // If no active subscription found
-        echo json_encode(["success" => false, "message" => "No active subscription found"]);
+        // Add new subscription
+        $subscription_id = $data['subscription_id'];
+        $order_id = $data['order_id'];
+        $price = $data['amount'];
+
+        $insertQuery = "INSERT INTO user_subscriptions (user_id, subscription_id, order_id, price, start_date, end_date, status)
+                        VALUES (?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 1 MONTH), 'active')";
+
+        $stmt = $conn->prepare($insertQuery);
+        $stmt->bind_param("iiis", $user_id, $subscription_id, $order_id, $price);
+        if ($stmt->execute()) {
+            echo json_encode([
+                "success" => true,
+                "message" => "Subscription successfully created."
+            ]);
+        } else {
+            echo json_encode([
+                "success" => false,
+                "message" => "Failed to create subscription."
+            ]);
+        }
+        $stmt->close();
     }
+
+    $checkStmt->close();
 }
 
-// Close connection
 $conn->close();
 ?>
